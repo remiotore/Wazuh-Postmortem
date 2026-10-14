@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wazuh Postmortem</title>
+<link rel="stylesheet" href="assets/css/style.css" />
+</head>
+<body>
+<header>
+  <div>
+    <h1>Wazuh Postmortem</h1>
+    <div class="sub" id="subtitle">Drop your logs or pick a sample &mdash; decoders and rules are built in. Nothing leaves this machine.</div>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<section id="intake">
+  <label class="dropzone" id="dropzone" for="logFiles">
+    <span class="dz-icon">&#8681;</span>
+    <span class="dz-text"><b>Drop log files</b> or <u>browse</u></span>
+    <span class="dz-sub">decoders &amp; rules are built in &mdash; applied automatically</span>
+    <input type="file" id="logFiles" multiple hidden />
+  </label>
+  <textarea id="logText" spellcheck="false" placeholder="…or paste raw log lines here (Ctrl/&#8984;+Enter to analyze)"></textarea>
+  <div class="intake-bar">
+    <div class="intake-row">
+      <label class="inline">Sample
+        <select id="sampleSelect">
+          <option value="" selected disabled>Choose a sample&hellip;</option>
+        </select>
+      </label>
+      <button id="run" class="primary">Analyze</button>
+    </div>
+    <span class="status" id="status"></span>
+    <div class="intake-row">
+      <div class="control-group">
+        <label class="inline">Alert level &ge; <input type="number" id="alertLevel" value="3" min="0" max="16" /></label>
+        <button id="toggleAlerts">Show Alerts Only</button>
+      </div>
+      <div class="view-controls">
+        <label class="inline" for="groupBy">Group by
+          <select id="groupBy">
+            <option value="source">Log source</option>
+            <option value="decoder">Decoder</option>
+            <option value="rule">Rule group</option>
+            <option value="level">Severity level</option>
+          </select>
+        </label>
+      </div>
+    </div>
+  </div>
+  <details id="advanced">
+    <summary>Advanced &mdash; custom decoders/rules, source hint, default year</summary>
+    <div class="adv-grid">
+      <div class="field">
+        <label for="decoderFiles">Custom decoders (.xml)</label>
+        <input type="file" id="decoderFiles" accept=".xml" multiple />
+      </div>
+      <div class="field">
+        <label for="ruleFiles">Custom rules (.xml)</label>
+        <input type="file" id="ruleFiles" accept=".xml" multiple />
+      </div>
+      <div class="field">
+        <label for="sourceHint">Source hint</label>
+        <input type="text" id="sourceHint" placeholder="e.g. sshd" />
+      </div>
+      <div class="field">
+        <label for="defaultYear">Default year</label>
+        <input type="number" id="defaultYear" value="2026" min="1970" max="9999" />
+      </div>
+    </div>
+  </details>
+</section>
+
+<main>
+  <div id="chartWrap">
+    <svg id="gantt"></svg>
+    <div id="tooltip"></div>
+    <div class="legend" id="legend"></div>
+  </div>
+  <section id="ioc">
+    <div class="ioc-head">
+      <h2>Indicators of Compromise</h2>
+      <span class="muted" id="iocNote">Base: all events &middot; Highlight: alerts</span>
+    </div>
+    <div id="iocGrid"></div>
+  </section>
+  <aside id="detail">
+    <button class="close" id="detailClose">Close</button>
+    <div id="detailBody"></div>
+  </aside>
+</main>
+
+<script src="assets/js/xml.js"></script>
+<script src="assets/js/predecoder.js"></script>
+<script src="assets/js/decoders.js"></script>
+<script src="assets/js/rules.js"></script>
+<script src="assets/js/engine.js"></script>
+<script src="assets/js/timeline.js"></script>
+<script src="assets/js/sample-data.js"></script>
+<script src="assets/js/charts.js"></script>
+<script src="assets/js/app.js"></script>
+</body>
+</html>
