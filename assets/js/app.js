@@ -38,8 +38,9 @@
       }
     });
 
-    var builtin = Wz.SAMPLE || { decoders: [], rules: [], samples: [] };
-    var state = { files: [], busy: false, lastRunKey: null };
+    var builtin = Wz.SAMPLE || { samples: [] };
+    var ruleset = Wz.RULESET || { decoders: [], rules: [] };
+    var state = { files: [], busy: false, lastRunKey: null, engines: null };
 
     var charts = new Wz.IoCCharts({ grid: $("iocGrid"), note: $("iocNote") });
 
@@ -73,6 +74,29 @@
     }
 
     // -- analysis -----------------------------------------------------
+    /*
+     * Parsing and compiling 230 ruleset documents takes ~200ms and does not
+     * depend on the log, so the built-in engines are built once and reused
+     * across runs.  Custom decoder/rule uploads replace them for that run.
+     */
+function buildEngines(decoderSources, ruleSources, alertLevel) {
+    var key = decoderSources.list.length + ":" + ruleSources.list.length + ":" + alertLevel;
+    var cached = state.engines;
+    if (cached && !decoderSources.custom && !ruleSources.custom && cached.key === key) {
+      cached.rules.alertLevel = alertLevel;
+      cached.rules.reset();
+      return cached;
+    }
+    var decoders = new Wz.DecoderEngine();
+    decoders.loadSources(decoderSources.list);
+    var rules = new Wz.RuleEngine(alertLevel);
+    rules.loadSources(ruleSources.list);
+    if (!decoderSources.custom && !ruleSources.custom) {
+      state.engines = { key: key, decoders: decoders, rules: rules };
+    }
+    return { decoders: decoders, rules: rules };
+  }
+
     function run() {
       if (state.busy) return;
       var decoderSources = [];
@@ -88,8 +112,8 @@
         readFiles($("decoderFiles").files),
         readFiles($("ruleFiles").files)
       ]).then(function (custom) {
-        decoderSources = custom[0].length ? custom[0] : builtin.decoders;
-        ruleSources = custom[1].length ? custom[1] : builtin.rules;
+        decoderSources = custom[0].length ? custom[0] : ruleset.decoders;
+        ruleSources = custom[1].length ? custom[1] : ruleset.rules;
 
         state.files.forEach(function (f) { logLines = logLines.concat(splitLines(f.text)); });
         logLines = logLines.concat(splitLines($("logText").value));
@@ -111,17 +135,18 @@
         if (!custom[0].length) note.push("built-in decoders");
         if (!custom[1].length) note.push("built-in rules");
 
-        var decoders = new Wz.DecoderEngine();
-        var nd = decoders.loadSources(decoderSources);
-        var rules = new Wz.RuleEngine(alertLevel);
-        var nr = rules.loadSources(ruleSources);
+        var decoderSet = { list: decoderSources, custom: custom[0].length > 0 };
+        var ruleSet = { list: ruleSources, custom: custom[1].length > 0 };
+        var built = buildEngines(decoderSet, ruleSet, alertLevel);
+        var decoders = built.decoders;
+        var rules = built.rules;
         var engine = new Wz.AnalyzerEngine(decoders, rules, {
           alertLevel: alertLevel,
           defaultYear: defaultYear
         });
 
-        setStatus("Analysing " + logLines.length + " lines with " + nd + " decoders / " +
-          nr + " rules\u2026");
+        setStatus("Analysing " + logLines.length + " lines with " + decoders.nodes.length +
+          " decoders / " + rules.rules.length + " rules\u2026");
 
         return engine.analyze(logLines, {
           sourceHint: sourceHint,

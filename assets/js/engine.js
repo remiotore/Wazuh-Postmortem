@@ -87,7 +87,7 @@
       matched.push({
         id: rule.id,
         level: rule.level,
-        description: rule.description,
+        description: Wz.expandRuleVars(rule.description, decoded.fields),
         groups: rule.groups,
         suppressed: entry.suppressed,
         frequency: rule.frequency,

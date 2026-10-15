@@ -1,10 +1,14 @@
 /*
  * Wazuh Offline Analyzer - decoder stage.
  *
- * Loads classic (4.x) XML decoders, builds the parent/child decoder tree and
- * evaluates it with a "match once and cache the chain" optimisation: a cheap
- * signature (program name + normalised opening tokens) maps to the decoder
- * chain that decoded the line, so later lines skip root iteration.
+ * Loads classic (4.x) XML decoders and evaluates them the way analysisd does:
+ * a decoder whose <parent> is the current end of the chain is applied when it
+ * matches, and the walk continues down the tree, so every matching child
+ * contributes and the last one to match owns the fields it overwrites.
+ *
+ * Matching the whole ruleset costs a scan of the parentless decoders, so the
+ * chain that decoded a line is cached under a normalised signature and reused
+ * for lines of the same shape.
  */
 (function (Wz) {
   "use strict";
@@ -22,7 +26,15 @@
     ["[[:punct:]]", "[!-/:-@\\[-`{-~]"]
   ];
 
-  var AFTER_PARENT = "after_parent";
+  // Chains in the real ruleset are a handful deep; the cap only guards against
+  // a parent cycle in a hand-written decoder.
+  var MAX_CHAIN_DEPTH = 12;
+
+  // Upstream default when a decoder declares no <type>.
+  var DEFAULT_TYPE = "syslog";
+
+  // "after_parent" is the default and is handled as the fallback in
+  // resolveOffset(); only the two explicit alternatives need naming here.
   var AFTER_PREMARK = "after_prematch";
   var AFTER_REGEX = "after_regex";
 
@@ -125,7 +137,14 @@
   }
 
   DecoderEngine.prototype.loadXml = function (text, sourceName) {
-    var root = Wz.Xml.parseWazuhXml(text);
+    var root;
+    try {
+      root = Wz.Xml.parseWazuhXml(text);
+    } catch (err) {
+      // Name the file: one malformed ruleset document otherwise takes the
+      // whole bundle down with an error that points nowhere.
+      throw new Error((sourceName ? sourceName + ": " : "") + err.message);
+    }
     var elements = root.getElementsByTagName("decoder");
     var count = 0;
     for (var i = 0; i < elements.length; i++) {
@@ -158,11 +177,11 @@
       var child = element.children[i];
       var tag = child.tagName;
       if (tag === "program_name") {
-        programName = Wz.Xml.elementText(child) || null;
+        programName = Wz.Xml.patternText(child) || null;
       } else if (tag === "prematch") {
-        prematch = Wz.Xml.elementText(child) || null;
+        prematch = Wz.Xml.patternText(child) || null;
       } else if (tag === "regex") {
-        regexes.push(new RegexSpec(Wz.Xml.elementText(child), child.getAttribute("offset")));
+        regexes.push(new RegexSpec(Wz.Xml.patternText(child), child.getAttribute("offset")));
       } else if (tag === "order") {
         order = Wz.Xml.elementText(child).split(",").map(function (s) { return s.trim(); });
       } else if (tag === "parent") {
@@ -223,11 +242,17 @@
     });
   };
 
+  /*
+   * Cache key for a decoded shape: the program name plus the whole message with
+   * digit runs collapsed, so a burst of identical attack lines hits the cache
+   * while genuinely different lines do not collide.  An earlier version keyed on
+   * the first four tokens only, which made "/app?id=1 union select ..." poison
+   * the entry for every later access-log line from the same host.
+   */
   DecoderEngine.prototype.signature = function (event) {
     var base = event.programName || event.source || "-";
-    var tokens = event.message.replace(/^\s+/, "").split(/\s+/).slice(0, 4);
-    var joined = tokens.join(" ").replace(/\d+/g, "#");
-    return (base + "|" + joined.slice(0, 80)).toLowerCase();
+    var normalized = event.message.replace(/[0-9]+/g, "#").replace(/\s+/g, " ");
+    return (base + "|" + normalized.length + "|" + normalized.slice(0, 160)).toLowerCase();
   };
 
   DecoderEngine.prototype.decode = function (event) {
@@ -240,20 +265,32 @@
         return reused;
       }
     }
-    var result = this._scanRoots(event);
+    var result = this._bestMatch(event);
     if (result) {
       this.cache.put(signature, result.chainNodes);
       return result;
     }
-    return { decoded: false, decoder: "", chain: [], fields: {}, cached: false, chainNodes: [] };
+    return { decoded: false, decoder: "", chain: [], type: "", fields: {}, cached: false, chainNodes: [] };
   };
 
-  DecoderEngine.prototype._scanRoots = function (event) {
+  /*
+   * Every root is tried and the deepest chain wins, ties going to the earliest
+   * decoder in the ruleset.  Picking the first root that merely matches is not
+   * good enough: the roundcube prematch is a character class that matches any
+   * word character, so it accepts syslog, firewall and access-log lines alike
+   * and would shadow sshd, apache and friends purely by file order.
+   */
+  DecoderEngine.prototype._bestMatch = function (event) {
+    var best = null;
     for (var i = 0; i < this.roots.length; i++) {
       var result = this._matchFrom(this.roots[i], event, 0);
-      if (result) return result;
+      if (!result) continue;
+      if (best === null || result.chain.length > best.chain.length ||
+        (result.chain.length === best.chain.length && result.rootIndex < best.rootIndex)) {
+        best = result;
+      }
     }
-    return null;
+    return best;
   };
 
   DecoderEngine.prototype._runChain = function (chain, event) {
@@ -271,12 +308,37 @@
       decoded: true,
       decoder: names[names.length - 1],
       chain: names,
+      type: chainType(chain),
       fields: fields,
       cached: true,
       chainNodes: chain.slice()
     };
   };
 
+  /*
+   * The event's category is the <type> of the last decoder in the chain that
+   * declares one; upstream defaults it to "syslog".  Rules select on it with
+   * <category>, which is how the web, squid, ids, firewall, windows and ossec
+   * rule sets keep from matching each other's events.
+   */
+  function chainType(chain) {
+    for (var i = chain.length - 1; i >= 0; i--) {
+      if (chain[i].type) return chain[i].type;
+    }
+    return DEFAULT_TYPE;
+  }
+
+  /*
+   * Build the decoder chain for one event.
+   *
+   * analysisd walks its ordered decoder list and applies a decoder whose
+   * <parent> is the current end of the chain; it does not stop at the first
+   * child that matches, it keeps going.  That matters in practice: the web
+   * access log decoder declares a domain, an ip-ip and a plain ip child whose
+   * prematches all overlap, and the last one to match is the one whose fields
+   * survive - which is how upstream ends up with the right srcip on a plain
+   * combined-log line.
+   */
   DecoderEngine.prototype._matchFrom = function (node, event, offset) {
     var match = this._matchNode(node, event, offset);
     if (!match) return null;
@@ -284,35 +346,30 @@
     var chainNodes = [node];
     var names = [node.name];
     var fields = Object.assign({}, match.fields);
-    var current = node;
-    var currentMatch = match;
-
-    while (true) {
-      var kids = current.children || [];
-      var chosen = null;
-      for (var i = 0; i < kids.length; i++) {
-        var childMatch = this._matchNode(kids[i], event, currentMatch.endOffset);
-        if (childMatch) {
-          chosen = { node: kids[i], match: childMatch };
-          break;
-        }
-      }
-      if (!chosen) break;
-      chainNodes.push(chosen.node);
-      names.push(chosen.node.name);
-      Object.assign(fields, chosen.match.fields);
-      current = chosen.node;
-      currentMatch = chosen.match;
-    }
-
+    this._extendChain(node, match, event, chainNodes, names, fields, MAX_CHAIN_DEPTH);
     return {
       decoded: true,
       decoder: names[names.length - 1],
       chain: names,
+      type: chainType(chainNodes),
       fields: fields,
       cached: false,
-      chainNodes: chainNodes
+      chainNodes: chainNodes,
+      rootIndex: node.index
     };
+  };
+
+  DecoderEngine.prototype._extendChain = function (node, match, event, chainNodes, names, fields, budget) {
+    if (budget <= 0) return;
+    var kids = node.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      var childMatch = this._matchNode(kids[i], event, match.endOffset);
+      if (!childMatch) continue;
+      chainNodes.push(kids[i]);
+      names.push(kids[i].name);
+      Object.assign(fields, childMatch.fields);
+      this._extendChain(kids[i], childMatch, event, chainNodes, names, fields, budget - 1);
+    }
   };
 
   DecoderEngine.prototype._matchNode = function (node, event, inheritedOffset) {
@@ -333,7 +390,9 @@
         return null;
       }
       Object.assign(fields, flattenJson(parsed));
-      return { node: node, fields: fields, endOffset: offset, captures: [] };
+      return {
+        node: node, fields: fields, endOffset: offset, captures: []
+      };
     }
 
     if (node.programRe) {
@@ -351,14 +410,28 @@
 
     if (node.regexes.length === 0) {
       if (!node.programRe && !node.prematchRe) return null;
+      /*
+       * A decoder that only gates on prematch has not consumed anything: the
+       * offset handed to children is the inherited one, not the end of the
+       * prematch.  Children that want to start after the prematch ask for it
+       * explicitly with offset="after_prematch".  Getting this wrong makes
+       * every web-accesslog line fall off the end of the decoder chain.
+       */
       return {
         node: node,
         fields: fields,
-        endOffset: prematchEnd !== null ? prematchEnd : offset,
+        endOffset: offset,
         captures: []
       };
     }
 
+    /*
+     * <order> is one list per decoder, consumed left to right across every
+     * regex the decoder owns - not restarted per regex.  Multi-regex decoders
+     * such as the checkpoint syslog ones rely on this to name their second and
+     * third capture groups.
+     */
+    var orderCursor = 0;
     var regexOffset = offset;
     var lastEnd = offset;
     for (var i = 0; i < node.regexes.length; i++) {
@@ -368,16 +441,29 @@
       if (!m) return null;
       var groups = m.slice(1);
       for (var g = 0; g < groups.length; g++) {
-        if (groups[g] != null) captures.push(groups[g]);
+        var field = orderCursor < node.order.length ? node.order[orderCursor] : null;
+        orderCursor++;
+        if (groups[g] == null) continue;
+        captures.push(groups[g]);
+        if (field) fields[field] = groups[g];
       }
-      assignOrder(fields, node.order, groups);
       lastEnd = start + m.index + m[0].length;
       regexOffset = lastEnd;
     }
 
-    return { node: node, fields: fields, endOffset: lastEnd, captures: captures };
+    return {
+      node: node,
+      fields: fields,
+      endOffset: lastEnd,
+      captures: captures
+    };
   };
 
+  /*
+   * Upstream defaults <regex offset="..."> to after_parent: a decoder that also
+   * has a prematch still matches its regex against the inherited offset unless
+   * it explicitly asks for after_prematch.
+   */
   function resolveOffset(specOffset, inherited, prematchEnd, regexOffset) {
     if (specOffset === AFTER_PREMARK) {
       return prematchEnd !== null ? prematchEnd : inherited;
@@ -385,22 +471,7 @@
     if (specOffset === AFTER_REGEX) {
       return regexOffset;
     }
-    if (specOffset === AFTER_PARENT) {
-      return inherited;
-    }
-    if (prematchEnd !== null) {
-      return prematchEnd;
-    }
     return inherited;
-  }
-
-  function assignOrder(fields, order, groups) {
-    for (var i = 0; i < groups.length; i++) {
-      if (i >= order.length) break;
-      var name = order[i];
-      if (!name) continue;
-      fields[name] = groups[i];
-    }
   }
 
   function flattenJson(data, prefix, out) {

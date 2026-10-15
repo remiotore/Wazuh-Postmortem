@@ -75,6 +75,23 @@
     return (el.textContent || "").trim();
   }
 
+  /*
+   * Pattern-bearing elements (<regex>, <prematch>, <match>, <field>) must keep
+   * their leading and trailing spaces: upstream uses them as part of the match,
+   * e.g. <match>^ossec: output: </match> or <prematch>^Failed \S+ </prematch>.
+   * Trimming them silently breaks several hundred rules and decoders.
+   *
+   * Only values that really are broken across source lines - long alternation
+   * lists in the Windows rules, for instance - get their interior whitespace
+   * collapsed onto one space.
+   */
+  function patternText(el) {
+    if (!el) return "";
+    var text = el.textContent || "";
+    if (text.indexOf("\n") === -1) return text;
+    return text.replace(/\s+/g, " ").trim();
+  }
+
   function childElements(el, name) {
     var out = [];
     if (!el) return out;
@@ -92,6 +109,7 @@
   Wz.Xml = {
     parseWazuhXml: parseWazuhXml,
     elementText: elementText,
+    patternText: patternText,
     childElements: childElements,
     firstChild: firstChild
   };
