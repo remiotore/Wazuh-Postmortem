@@ -27,9 +27,10 @@ var xmlDom = require("./lib/xml-dom.js");
 
 var ROOT = path.resolve(__dirname, "..");
 var JS_DIR = path.join(ROOT, "assets", "js");
+var DATA_DIR = path.join(ROOT, "assets", "data");
 
 var ENGINE_MODULES = ["xml.js", "predecoder.js", "decoders.js", "rules.js", "engine.js"];
-var DATA_MODULES = ["ruleset-data.js", "sample-data.js"];
+var DATA_MODULES = ["ruleset.js", "samples.js"];
 
 function parseArgs(argv) {
   var options = { perf: 0 };
@@ -58,9 +59,9 @@ function createSandbox() {
   return sandbox;
 }
 
-function loadModules(sandbox, files) {
+function loadModules(sandbox, files, dir) {
   files.forEach(function (file) {
-    var full = path.join(JS_DIR, file);
+    var full = path.join(dir, file);
     if (!fs.existsSync(full)) throw new Error("Missing module: " + file);
     vm.runInContext(fs.readFileSync(full, "utf8"), sandbox, { filename: full });
   });
@@ -175,8 +176,8 @@ function benchmark(Wz, iterations) {
 function main(argv) {
   var options = parseArgs(argv);
   var sandbox = createSandbox();
-  var Wz = loadModules(sandbox, ENGINE_MODULES);
-  loadModules(sandbox, DATA_MODULES);
+  var Wz = loadModules(sandbox, ENGINE_MODULES, JS_DIR);
+  loadModules(sandbox, DATA_MODULES, DATA_DIR);
 
   if (!Wz.RULESET) {
     fail("window.Wazuh.RULESET is missing - run: node tools/build-ruleset.js");

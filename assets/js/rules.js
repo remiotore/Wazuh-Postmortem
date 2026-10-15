@@ -749,7 +749,6 @@
   }
 
   Wz.RuleEngine = RuleEngine;
-  Wz.osmatch = osmatch;
 
   /*
    * Descriptions may interpolate decoded fields as $(name) - "Docker: Container

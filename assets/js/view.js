@@ -1,13 +1,16 @@
 /*
- * Wazuh Offline Analyzer - interactive Gantt / timeline renderer.
+ * Wazuh Offline Analyzer - result views.
  *
- * Dependency-free SVG renderer.  Group rows by log source, decoder, rule group
- * or severity; toggle between all events and alerts only; zoom/drag the time
- * axis; hover for a tooltip and click for a full detail panel.
+ * Two dependency-free SVG renderers over the same analysis payload: the
+ * interactive Gantt timeline and the Indicators-of-Compromise panel.  They live
+ * together because they share the time scale and the colour/escaping helpers,
+ * and because the IoC "events over time" chart must agree with the Gantt chart
+ * on every event's position and display time.
  */
 (function (Wz) {
   "use strict";
 
+  // -- shared helpers ------------------------------------------------------
   var LEVEL_COLORS = [
     { min: 12, color: "#ff2d55" },
     { min: 10, color: "#ff5c5c" },
@@ -15,6 +18,7 @@
     { min: 4, color: "#ffd166" },
     { min: 0, color: "#4c8dff" }
   ];
+  var MUTED = "#3d5a8c";
 
   function levelColor(level) {
     for (var i = 0; i < LEVEL_COLORS.length; i++) {
@@ -49,6 +53,20 @@
       a.getDate() !== b.getDate();
   }
 
+  function truncate(text, max) {
+    text = String(text == null ? "" : text);
+    return text.length > max ? text.slice(0, max - 1) + "\u2026" : text;
+  }
+
+  function fieldValue(ev, names) {
+    var fields = ev.fields || {};
+    for (var i = 0; i < names.length; i++) {
+      var value = fields[names[i]];
+      if (value !== undefined && value !== null && value !== "") return String(value);
+    }
+    return null;
+  }
+
   /*
    * Build a shared scale for a list of events.
    *
@@ -59,7 +77,7 @@
    * The same scale drives the Gantt chart and the "events over time" IoC chart
    * so both agree on every event's position and display time.
    */
-  Wz.buildTimeScale = function (events) {
+  function buildTimeScale(events) {
     events = events || [];
     var n = events.length;
     var epochs = new Map();
@@ -140,8 +158,9 @@
         return "line " + Math.round(frac * maxIndex);
       }
     };
-  };
+  }
 
+  // -- Gantt timeline ------------------------------------------------------
   function Timeline(opts) {
     this.el = opts.el;
     this.payload = null;
@@ -241,7 +260,7 @@
     this.state.viewStart = 0;
     this.state.viewEnd = 1;
 
-    this.scale = Wz.buildTimeScale(this.EVENTS);
+    this.scale = buildTimeScale(this.EVENTS);
     this.hasTime = this.scale.hasTime;
     this.minT = this.scale.minT;
     this.maxT = this.scale.maxT;
@@ -271,7 +290,6 @@
   };
 
   Timeline.prototype._currentEvents = function () {
-    var self = this;
     return this.state.showAlertsOnly ? this.EVENTS.filter(function (e) { return e.alert; }) : this.EVENTS;
   };
 
@@ -357,7 +375,7 @@
         var pos = self._position(ev);
         if (pos < self.state.viewStart || pos > self.state.viewEnd) return;
         var x = xFor(pos);
-        var color = ev.alert ? levelColor(ev.max_level) : "#3d5a8c";
+        var color = ev.alert ? levelColor(ev.max_level) : MUTED;
         var w = Math.max(4, Math.min(14, totalW / Math.max(1, rowEvents.length)));
         parts.push('<rect class="event" data-index="' + ev.index + '" x="' + (x - w / 2) +
           '" y="' + (y + 5) + '" width="' + w + '" height="' + (self.ROW_H - 10) +
@@ -373,7 +391,7 @@
   Timeline.prototype._renderLegend = function () {
     if (!this.el.legend) return;
     var items = [
-      { c: "#3d5a8c", t: "Normal event" },
+      { c: MUTED, t: "Normal event" },
       { c: levelColor(4), t: "Low (4-6)" },
       { c: levelColor(7), t: "Medium (7-9)" },
       { c: levelColor(10), t: "High (10-11)" },
@@ -490,6 +508,241 @@
     this.render();
   };
 
+  // -- Indicators of Compromise panel --------------------------------------
+  /*
+   * Every chart aggregates over all events: the muted bar is the total and the
+   * coloured overlay is the alert subset.
+   */
+  function card(title, body) {
+    return '<div class="ioc-card"><h3>' + esc(title) + "</h3>" +
+      (body || '<div class="ioc-empty">No data</div>') + "</div>";
+  }
+
+  function barCard(title, items, opts) {
+    opts = opts || {};
+    var alertsOnly = !!opts.alertsOnly;
+    items = items.slice(0, opts.maxItems || 6).filter(function (it) {
+      return alertsOnly ? it.alert > 0 : it.total > 0;
+    });
+    if (!items.length) return card(title, "");
+
+    var W = 340;
+    var rowH = 20;
+    var pad = 8;
+    var labelW = 132;
+    var gap = 8;
+    var countW = 44;
+    var chartW = W - labelW - gap - countW;
+    var H = pad * 2 + items.length * rowH;
+    var max = 1;
+    items.forEach(function (it) {
+      max = Math.max(max, alertsOnly ? it.alert : it.total);
+    });
+
+    var parts = [];
+    items.forEach(function (it, i) {
+      var y = pad + i * rowH;
+      var cy = y + rowH / 2;
+      var value = alertsOnly ? it.alert : it.total;
+      var barW = Math.max(2, (value / max) * chartW);
+      var trackW = Math.max(2, (it.total / max) * chartW);
+      var alertW = Math.max(2, (it.alert / max) * chartW);
+      var barY = y + 3;
+      var barH = rowH - 6;
+
+      parts.push('<text class="ioc-label" x="' + (labelW - 6) + '" y="' + cy +
+        '" text-anchor="end" dominant-baseline="middle"><title>' + esc(it.full || it.label) +
+        '</title>' + esc(truncate(it.label, 22)) + '</text>');
+      if (!alertsOnly && it.total > 0) {
+        parts.push('<rect x="' + (labelW + gap) + '" y="' + barY + '" width="' + trackW +
+          '" height="' + barH + '" rx="2" fill="' + MUTED + '" fill-opacity="0.55"/>');
+      }
+      if (it.alert > 0) {
+        var aw = alertsOnly ? barW : alertW;
+        parts.push('<rect x="' + (labelW + gap) + '" y="' + barY + '" width="' + aw +
+          '" height="' + barH + '" rx="2" fill="' + (it.color || levelColor(it.level)) + '"/>');
+      }
+      var countText = alertsOnly ? String(it.alert)
+        : (it.alert > 0 ? it.alert + "/" + it.total : String(it.total));
+      parts.push('<text class="ioc-count" x="' + (W - 4) + '" y="' + cy +
+        '" text-anchor="end" dominant-baseline="middle">' + esc(countText) + '</text>');
+    });
+
+    return card(title, '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">' +
+      parts.join("") + "</svg>");
+  }
+
+  function timeCard(title, scale, events, alertsOnly) {
+    if (!events.length) return card(title, "");
+    var W = 340;
+    var H = 150;
+    var padL = 10;
+    var padR = 10;
+    var padT = 12;
+    var padB = 24;
+    var bins = 32;
+    var plotW = W - padL - padR;
+    var plotH = H - padT - padB;
+    var base = new Array(bins);
+    var alert = new Array(bins);
+    var i;
+    for (i = 0; i < bins; i++) { base[i] = 0; alert[i] = 0; }
+
+    events.forEach(function (ev) {
+      var pos = scale.posOf(ev);
+      var bin = Math.floor(pos * bins);
+      if (bin < 0) bin = 0;
+      if (bin >= bins) bin = bins - 1;
+      base[bin]++;
+      if (ev.alert) alert[bin]++;
+    });
+
+    var max = 1;
+    for (i = 0; i < bins; i++) max = Math.max(max, alertsOnly ? alert[i] : base[i]);
+
+    var slot = plotW / bins;
+    var barW = Math.max(2, slot - 2);
+    var parts = [];
+    parts.push('<line class="ioc-axis" x1="' + padL + '" y1="' + (padT + plotH) +
+      '" x2="' + (W - padR) + '" y2="' + (padT + plotH) + '"/>');
+    for (i = 0; i < bins; i++) {
+      var x = padL + i * slot + 1;
+      if (!alertsOnly && base[i] > 0) {
+        var bh = (base[i] / max) * plotH;
+        parts.push('<rect x="' + x + '" y="' + (padT + plotH - bh) + '" width="' + barW +
+          '" height="' + bh + '" rx="1" fill="' + MUTED + '" fill-opacity="0.55"/>');
+      }
+      if (alert[i] > 0) {
+        var ah = (alert[i] / max) * plotH;
+        parts.push('<rect x="' + x + '" y="' + (padT + plotH - ah) + '" width="' + barW +
+          '" height="' + ah + '" rx="1" fill="' + levelColor(10) + '"/>');
+      }
+    }
+
+    var labels = 4;
+    for (var t = 0; t <= labels; t++) {
+      var frac = t / labels;
+      var lx = padL + frac * plotW;
+      var anchor = t === 0 ? "start" : (t === labels ? "end" : "middle");
+      parts.push('<text class="ioc-tick" x="' + lx + '" y="' + (H - 8) +
+        '" text-anchor="' + anchor + '">' + esc(scale.tickLabel(frac)) + "</text>");
+    }
+
+    return card(title, '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="xMidYMid meet">' +
+      parts.join("") + "</svg>");
+  }
+
+  function topItems(counts) {
+    return Object.keys(counts).map(function (key) {
+      return counts[key];
+    }).sort(function (a, b) {
+      return b.total - a.total || b.alert - a.alert;
+    });
+  }
+
+  function IoCCharts(opts) {
+    this.el = (opts && opts.grid) || null;
+    this.note = (opts && opts.note) || null;
+    this.events = [];
+    this.scale = null;
+    this.alertsOnly = false;
+  }
+
+  IoCCharts.prototype.setData = function (payload) {
+    this.events = (payload && payload.events) || [];
+    this.scale = buildTimeScale(this.events);
+    this.alertsOnly = false;
+    this.render();
+  };
+
+  IoCCharts.prototype.setAlertsOnly = function (on) {
+    this.alertsOnly = !!on;
+    this.render();
+  };
+
+  IoCCharts.prototype.render = function () {
+    if (!this.el) return;
+    if (this.note) {
+      this.note.innerHTML = this.alertsOnly
+        ? "Showing alerts only"
+        : "Base: all events &middot; Highlight: alerts";
+    }
+    if (!this.events.length) {
+      this.el.innerHTML = '<div class="ioc-empty">No events analysed yet.</div>';
+      return;
+    }
+
+    var events = this.events;
+    var alertsOnly = this.alertsOnly;
+
+    // severity distribution -------------------------------------------------
+    var allLevels = {};
+    var alertLevels = {};
+    events.forEach(function (ev) {
+      var lv = 0;
+      (ev.matched_rules || []).forEach(function (r) { if (r.level > lv) lv = r.level; });
+      var entry = allLevels[lv] || (allLevels[lv] = { label: "L" + lv, total: 0, alert: 0, level: lv });
+      entry.total++;
+      if (ev.alert) {
+        alertLevels[ev.max_level] = (alertLevels[ev.max_level] || 0) + 1;
+      }
+    });
+    Object.keys(alertLevels).forEach(function (lv) {
+      var entry = allLevels[lv] || (allLevels[lv] = { label: "L" + lv, total: 0, alert: 0, level: +lv });
+      entry.alert = alertLevels[lv];
+    });
+    var severityItems = Object.keys(allLevels).map(function (k) { return allLevels[k]; })
+      .sort(function (a, b) { return b.level - a.level; });
+
+    // top sources / users / ports ------------------------------------------
+    var sources = {};
+    var users = {};
+    var ports = {};
+    events.forEach(function (ev) {
+      var isAlert = ev.alert;
+      var srcip = fieldValue(ev, ["srcip", "src_ip"]);
+      if (srcip) {
+        var s = sources[srcip] || (sources[srcip] = { label: srcip, full: srcip, total: 0, alert: 0, color: levelColor(12) });
+        s.total++; if (isAlert) s.alert++;
+      }
+      var user = fieldValue(ev, ["srcuser", "dstuser", "user"]);
+      if (user) {
+        var u = users[user] || (users[user] = { label: user, full: user, total: 0, alert: 0, color: levelColor(7) });
+        u.total++; if (isAlert) u.alert++;
+      }
+      var port = fieldValue(ev, ["dstport"]);
+      if (port) {
+        var p = ports[port] || (ports[port] = { label: port, full: "port " + port, total: 0, alert: 0, color: levelColor(10) });
+        p.total++; if (isAlert) p.alert++;
+      }
+    });
+
+    // top rules -------------------------------------------------------------
+    var rules = {};
+    events.forEach(function (ev) {
+      (ev.matched_rules || []).forEach(function (r) {
+        var key = String(r.id);
+        var entry = rules[key] || (rules[key] = {
+          label: r.id + " " + truncate(r.description || "", 18),
+          full: r.id + " " + (r.description || ""),
+          total: 0, alert: 0, color: levelColor(r.level)
+        });
+        entry.total++;
+        if (r.alert) entry.alert++;
+      });
+    });
+
+    var html = [];
+    html.push(barCard("Severity distribution", severityItems, { alertsOnly: alertsOnly }));
+    html.push(barCard("Top source IPs", topItems(sources), { alertsOnly: alertsOnly }));
+    html.push(barCard("Top users", topItems(users), { alertsOnly: alertsOnly }));
+    html.push(barCard("Top destination ports", topItems(ports), { alertsOnly: alertsOnly }));
+    html.push(barCard("Top rules fired", topItems(rules), { alertsOnly: alertsOnly }));
+    html.push(timeCard("Events over time", this.scale, events, alertsOnly));
+
+    this.el.innerHTML = html.join("");
+  };
+
   Wz.Timeline = Timeline;
-  Wz.levelColor = levelColor;
+  Wz.IoCCharts = IoCCharts;
 })(window.Wazuh = window.Wazuh || {});

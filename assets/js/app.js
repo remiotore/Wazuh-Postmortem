@@ -79,23 +79,23 @@
      * depend on the log, so the built-in engines are built once and reused
      * across runs.  Custom decoder/rule uploads replace them for that run.
      */
-function buildEngines(decoderSources, ruleSources, alertLevel) {
-    var key = decoderSources.list.length + ":" + ruleSources.list.length + ":" + alertLevel;
-    var cached = state.engines;
-    if (cached && !decoderSources.custom && !ruleSources.custom && cached.key === key) {
-      cached.rules.alertLevel = alertLevel;
-      cached.rules.reset();
-      return cached;
+    function buildEngines(decoderSources, ruleSources, alertLevel) {
+      var key = decoderSources.list.length + ":" + ruleSources.list.length + ":" + alertLevel;
+      var cached = state.engines;
+      if (cached && !decoderSources.custom && !ruleSources.custom && cached.key === key) {
+        cached.rules.alertLevel = alertLevel;
+        cached.rules.reset();
+        return cached;
+      }
+      var decoders = new Wz.DecoderEngine();
+      decoders.loadSources(decoderSources.list);
+      var rules = new Wz.RuleEngine(alertLevel);
+      rules.loadSources(ruleSources.list);
+      if (!decoderSources.custom && !ruleSources.custom) {
+        state.engines = { key: key, decoders: decoders, rules: rules };
+      }
+      return { decoders: decoders, rules: rules };
     }
-    var decoders = new Wz.DecoderEngine();
-    decoders.loadSources(decoderSources.list);
-    var rules = new Wz.RuleEngine(alertLevel);
-    rules.loadSources(ruleSources.list);
-    if (!decoderSources.custom && !ruleSources.custom) {
-      state.engines = { key: key, decoders: decoders, rules: rules };
-    }
-    return { decoders: decoders, rules: rules };
-  }
 
     function run() {
       if (state.busy) return;

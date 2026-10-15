@@ -210,7 +210,6 @@
   }
 
   Wz.Predecoder = Predecoder;
-  Wz.parseIsoTimestamp = parseIsoTimestamp;
 
   // Fields derived purely from pre-decoding, available to rules' same_* checks.
   Wz.eventFieldsSnapshot = function (event) {

@@ -2,7 +2,7 @@
  * Demo logs for the built-in sample picker.  Hand written, not generated.
  *
  * The decoders and rules that interpret these lines ship separately in
- * ruleset-data.js, which tools/build-ruleset.js regenerates from
+ * assets/data/ruleset.js, which tools/build-ruleset.js regenerates from
  * wazuh-ruleset/.
  */
 window.Wazuh = window.Wazuh || {};

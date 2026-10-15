@@ -9,10 +9,10 @@
  * This script walks the vendored Wazuh ruleset, normalises the handful of files
  * that upstream leaves as non-well-formed XML, applies the correctness patches
  * listed below, verifies every document still parses, and writes
- * assets/js/ruleset-data.js.
+ * assets/data/ruleset.js.
  *
  * Usage:
- *   node tools/build-ruleset.js            rebuild assets/js/ruleset-data.js
+ *   node tools/build-ruleset.js            rebuild assets/data/ruleset.js
  *   node tools/build-ruleset.js --check    fail if the checked-in bundle is stale
  *   node tools/build-ruleset.js --stats    print the inventory without writing
  *
@@ -32,7 +32,7 @@ var xmlDom = require("./lib/xml-dom.js");
 
 var ROOT = path.resolve(__dirname, "..");
 var RULESET_DIR = path.join(ROOT, "wazuh-ruleset");
-var DEFAULT_OUT = path.join(ROOT, "assets", "js", "ruleset-data.js");
+var DEFAULT_OUT = path.join(ROOT, "assets", "data", "ruleset.js");
 
 var EXCLUDED_DIRS = ["translated", "log-entries"];
 
@@ -352,22 +352,23 @@ function main(argv) {
   }
 
   var output = render(report);
+  var outName = path.relative(ROOT, options.out);
 
   if (options.check) {
     var existing = fs.existsSync(options.out) ? fs.readFileSync(options.out, "utf8") : null;
     if (existing === output) {
-      console.log("ruleset-data.js is up to date (" + totals.files + " files, " +
+      console.log(outName + " is up to date (" + totals.files + " files, " +
         totals.decoders + " decoders, " + totals.rules + " rules).");
       return 0;
     }
-    console.error("ruleset-data.js is stale. Run: node tools/build-ruleset.js");
+    console.error(outName + " is stale. Run: node tools/build-ruleset.js");
     return 1;
   }
 
   fs.mkdirSync(path.dirname(options.out), { recursive: true });
   fs.writeFileSync(options.out, output);
   printStats(report);
-  console.log("\nwrote " + path.relative(ROOT, options.out) + " (" +
+  console.log("\nwrote " + outName + " (" +
     (Buffer.byteLength(output) / 1024).toFixed(0) + " KiB)");
   return 0;
 }
